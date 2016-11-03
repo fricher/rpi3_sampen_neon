@@ -19,43 +19,7 @@
 #include "sampen.h"
 #include "sampen_neon.h"
 
-#define NUM_RUNS 10
-
-/*
-static void thread_func(unsigned int n, float r, float sigma)
-{
-    float32x4_t base_current, base_next;
-    const float max_err = r * sigma;
-    const float32x4_t max_err_vec = {max_err, max_err, max_err, max_err};
-    const unsigned int nq = SAMPLE_SIZE / 4;
-    std::unique_lock<std::mutex> lock(mtx, std::defer_lock);
-
-    while (!kill_threads) {
-        lock.lock();
-        if (cond_var.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::no_timeout) {
-            lock.unlock();
-            for (unsigned int i = 0; i < nq - 2; ++i) {
-                base_current = data_shifts[n][i];
-                base_next = data_shifts[n][i + 1];
-                for (unsigned int m = n; m < 4; ++m) {
-                    for (unsigned int j = m > n ? i : i + 1; j < nq - 1; ++j) {
-                        // abdq = absolute difference
-                        // cleq = compare less or equal (all ones if true)
-                        // shrq = shift by finite amount to the right
-                        // addq = add
-                        if (uint32x4_check_gt(vcleq_f32(vabdq_f32(base_current, data_shifts[m][j]), max_err_vec))) {
-                            ++c[n];
-                            if (fabs(base_next[0] - data_shifts[m][j + 1][0]) < max_err)
-                                ++c1[n];
-                        }
-                    }
-                }
-            }
-            sem_tracker[n] = 0;
-        } else
-            lock.unlock();
-    }
-}*/
+#define NUM_RUNS 20
 
 static inline double elapsed_ms(struct timespec &start, struct timespec &end)
 {
@@ -103,7 +67,7 @@ int main(int, char **)
     std::future<float> futures[FILE_COLS];
 
     float r = 0.2, sigma = 255;
-/*
+
     wnd_cnt = 0;
     clock_gettime(CLOCK_REALTIME, &start);
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
@@ -173,7 +137,7 @@ int main(int, char **)
 
     std::cout << "Average time (neon) : " << time_neon_threaded / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal_threaded - time_neon_threaded) / time_normal_threaded) << "%" << std::endl << std::endl;
-	*/
+
 	
 	
 	init_neon_parallel();

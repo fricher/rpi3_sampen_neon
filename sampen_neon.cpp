@@ -10,7 +10,7 @@
 #include <iostream>
 #include <condition_variable>
 
-#define NUM_THREADS 6
+#define NUM_THREADS 3
 #define NUM_CPU 4
 
 static inline uint32_t uint32x4_check(uint32x4_t in)
@@ -35,7 +35,7 @@ float extractSampEn_neon(const float *data, float r, float sigma)
     float32x4_t base_current, base_next, compare_current, compare_next;
     const float32x4_t max_err_vec = {max_err, max_err, max_err, max_err};
     unsigned int starting_j;
-	uint32_t tmp;
+    uint32_t tmp;
 
     for (unsigned int n = 0; n < 4; ++n) {
         for (unsigned int m = n; m < 4; ++m) {
@@ -91,21 +91,27 @@ static void *thread_routine(void *cookie)
     routine_struct_t *tmp = static_cast<routine_struct_t *>(cookie);
     struct timespec time;
 
-	cpu_set_t affinity;
-	sched_getaffinity(0,sizeof(cpu_set_t),&affinity);
-	std::cout << "Thread started on cpu " << CPU_COUNT(&affinity) << std::endl;
-	
-    while (!kill_threads) {
-        /*std::unique_lock<std::mutex> lock(mtx);
-        if (cond_var.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::no_timeout) {
-            lock.unlock();*/
-        if (tmp->working) {
-            /*for (unsigned int i = 0; i < tmp->sz; ++i) {
-                tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma);
-            }*/
-            tmp->working = false;
+    cpu_set_t affinity;
+    sched_getaffinity(0, sizeof(cpu_set_t), &affinity);
+    for (unsigned int i = 0; i < NUM_CPU; ++i) {
+        if (CPU_ISSET(i, &affinity)) {
+            std::cout << "Thread started on cpu " << i << std::endl;
         }
-        //std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    while (!kill_threads) {
+        std::unique_lock<std::mutex> lock(mtx);
+        if (cond_var.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::no_timeout) {
+            lock.unlock();
+
+            if (tmp->working) {
+                for (unsigned int i = 0; i < tmp->sz; ++i) {
+                    tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma);
+                }
+                tmp->working = false;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(1));
     }
     return NULL;
 }
@@ -128,16 +134,16 @@ void init_neon_parallel()
     pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
     pthread_attr_setschedparam(&attr, &sp);
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-		CPU_ZERO(&affinity);
-        CPU_SET(i % (NUM_CPU-1), &affinity);
+        CPU_ZERO(&affinity);
+        CPU_SET(i % (NUM_CPU - 1), &affinity);
         pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &affinity);
         pthread_create(&thread_pool[i], &attr, &thread_routine, &cookies[i]);
     }
 
     pthread_attr_destroy(&attr);
-	
-	CPU_SET(NUM_CPU-1,&affinity);
-	sched_setaffinity(0, sizeof(cpu_set_t), &affinity);
+
+    CPU_SET(NUM_CPU - 1, &affinity);
+    sched_setaffinity(0, sizeof(cpu_set_t), &affinity);
 }
 
 void cleanup_neon_parallel()
@@ -173,7 +179,7 @@ std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > 
             cookies[i].working = true;
         }
     }
-    //cond_var.notify_all();
+    cond_var.notify_all();
 
     while (true) {
         bool tmp = false;
@@ -184,9 +190,7 @@ std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > 
         //std::cout << tmp << std::endl;
         if (!tmp) {
             break;
-        } /*else {
-            std::this_thread::sleep_for(std::chrono::microseconds(1));
-        }*/
+        }
     }
 
     for (unsigned int i = 0; i < data.size(); ++i) {
