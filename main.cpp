@@ -19,7 +19,7 @@
 #include "sampen.h"
 #include "sampen_neon.h"
 
-#define NUM_RUNS 20
+#define NUM_RUNS 30
 
 static inline double elapsed_ms(struct timespec &start, struct timespec &end)
 {
@@ -68,6 +68,9 @@ int main(int, char **)
 
     float r = 0.2, sigma = 255;
 
+	
+	
+	/*
     wnd_cnt = 0;
     clock_gettime(CLOCK_REALTIME, &start);
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
@@ -137,7 +140,7 @@ int main(int, char **)
 
     std::cout << "Average time (neon) : " << time_neon_threaded / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal_threaded - time_neon_threaded) / time_normal_threaded) << "%" << std::endl << std::endl;
-
+*/
 	
 	
 	init_neon_parallel();

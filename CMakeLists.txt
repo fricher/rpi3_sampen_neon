@@ -5,9 +5,9 @@ project (neon_rpi3)
 EXECUTE_PROCESS( COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE )
 
 if(${ARCHITECTURE} STREQUAL "aarch64")
-	SET(GCC_COVERAGE_COMPILE_FLAGS "-O2 -Wall -D_REENTRANT -mcpu=cortex-a53")
+	SET(GCC_COVERAGE_COMPILE_FLAGS "-std=c++11 -O3 -Wall -D_REENTRANT -mcpu=cortex-a53")
 else()
-	SET(GCC_COVERAGE_COMPILE_FLAGS "-O2 -Wall -D_REENTRANT -mcpu=cortex-a53 -mfpu=neon-fp-armv8")
+	SET(GCC_COVERAGE_COMPILE_FLAGS "-std=c++11 -O3 -Wall -D_REENTRANT -mcpu=cortex-a53 -mfpu=neon-fp-armv8")
 endif()
 
 SET(GCC_COVERAGE_LINK_FLAGS "-lm -lpthread")

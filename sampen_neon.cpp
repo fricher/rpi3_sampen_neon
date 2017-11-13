@@ -8,7 +8,6 @@
 #include <vector>
 #include <mutex>
 #include <iostream>
-#include <condition_variable>
 
 #define NUM_THREADS 3
 #define NUM_CPU 4
@@ -20,47 +19,99 @@ static inline uint32_t uint32x4_check(uint32x4_t in)
 
 float extractSampEn_neon(const float *data, float r, float sigma)
 {
-    unsigned int c = 0, c1 = 0;
-
-    float32x4_t data_shifts[4][SAMPLE_SIZE / 4];
-
-    const float max_err = r * sigma;
-    const unsigned int nq = SAMPLE_SIZE / 4;
-
-    memcpy(data_shifts[0], &data[0], SAMPLE_SIZE * sizeof(float));
-    memcpy(data_shifts[1], &data[1], (SAMPLE_SIZE - 1)*sizeof(float));
-    memcpy(data_shifts[2], &data[2], (SAMPLE_SIZE - 2)*sizeof(float));
-    memcpy(data_shifts[3], &data[3], (SAMPLE_SIZE - 3)*sizeof(float));
-
-    float32x4_t base_current, base_next, compare_current, compare_next;
-    const float32x4_t max_err_vec = {max_err, max_err, max_err, max_err};
-    unsigned int starting_j;
+    uint32_t c = 0, c1 = 0;
     uint32_t tmp;
+    const float max_err = r * sigma;
+
+    const float32x4_t max_err_vec = vmovq_n_f32(max_err);
+    const uint32x4_t onex4 = vmovq_n_u32(1);
+
+    const float *data_end = data + SAMPLE_SIZE;
+
+    for (const float *i = data; i < data_end - 8; ++i) {
+        float32x4_t vec128a = vld1q_f32(i);
+        for (const float *j = i + 1; j < data_end - 4; ++j) {
+            float32x4_t vec128b = vld1q_f32(j);
+
+            tmp = vminvq_u32(vandq_u32(vcleq_f32(vabdq_f32(vec128a, vec128b), max_err_vec), onex4));
+            c += tmp;
+
+            const float *ni = i + 4, *nj = j + 4;
+            if (fabs(*ni - *nj) < max_err)
+                ++c1;
+        }
+    }
+
+    /*
+    uint8_t results[SAMPLE_SIZE][SAMPLE_SIZE] = {0};
+
+    for (unsigned int i = 0; i < SAMPLE_SIZE; ++i) {
+        for (unsigned int j = 0; j < SAMPLE_SIZE; ++j) {
+            results[i][j] = 0;
+        }
+    }
 
     for (unsigned int n = 0; n < 4; ++n) {
-        for (unsigned int m = n; m < 4; ++m) {
-            for (unsigned int i = 0; i < nq - 2; ++i) {
-                base_current = data_shifts[n][i];
-                base_next = data_shifts[n][i + 1];
-                starting_j = m > n ? i : i + 1;
-                for (unsigned int j = starting_j; j < nq - 1; ++j) {
-                    compare_current = data_shifts[m][j];
-                    compare_next = data_shifts[m][j + 1];
-                    // abdq = absolute difference
-                    // cleq = compare less than or equal (all ones if true)
-                    tmp = uint32x4_check(vcleq_f32(vabdq_f32(base_current, compare_current), max_err_vec));
-                    c += tmp;
-                    c1 += tmp & static_cast<uint32_t>(fabs(base_next[0] - compare_next[0]) < max_err);
-                    //                    if (uint32x4_check(vcleq_f32(vabdq_f32(base_current, data_shifts[m][j]), max_err_vec))) {
-                    //                        ++c;
-                    //                        if (fabs(base_next[0] - data_shifts[m][j + 1][0]) < max_err)
-                    //                            ++c1;
-                    //                    }
+        for (unsigned int m = 0; m < 4; ++m) {
+            for (unsigned int i = 0; i < nq - 1; ++i) {
+                for (unsigned int j = m > n ? i : i + 1; j < nq - 1; ++j) {
+                    ++results[i*4 + n][j*4 + m];
                 }
             }
         }
     }
 
+    std::ofstream out_log;
+    out_log.open("log.csv", std::ios::trunc);
+    for (unsigned int i = 0; i < SAMPLE_SIZE; ++i) {
+        for (unsigned int j = 0; j < SAMPLE_SIZE; ++j) {
+            out_log << (int)results[i][j];
+    		if(j < SAMPLE_SIZE-1)
+    			out_log << ",";
+        }
+        out_log << "\r\n";
+    }
+    out_log.close();
+    */
+
+    /*
+    for (int n = 0; n < 4; ++n) {
+        for (int m = 0; m < 4; ++m) {
+            for (unsigned int i = 0; i < nq - 1; ++i) {
+                //for (int i = nq - 2; i >= 0; --i) {
+                base_current = data_shifts[n][i];
+                base_next = data_shifts[n][i + 1];
+
+                for (unsigned int j = (m > n ? i : i + 1); j < nq - 1; ++j) {
+                    //for (int j = nq - 2; j >= (m > n ? i : i + 1); --j) {
+                    compare_current = data_shifts[m][j];
+                    compare_next = data_shifts[m][j + 1];
+                    // abdq = absolute difference
+                    // cleq = compare less than or equal (all ones if true)
+
+                    tmp_current = vandq_u32(vcleq_f32(vabdq_f32(base_current, compare_current), max_err_vec), log_and);
+                    tmp_next = vandq_u32(vcleq_f32(vabdq_f32(base_next, compare_next), max_err_vec), log_and);
+                    tmp = vminvq_u32(tmp_current);
+
+                    //tmp = uint32x4_check(vcleq_f32(vabdq_f32(base_current, compare_current), max_err_vec));
+
+                    c += tmp;
+                    c1 += tmp & vgetq_lane_u32(tmp_next, 0);
+
+                    //c1 += tmp & static_cast<uint32_t>(fabs(base_next[0] - compare_next[0]) < max_err);
+
+                    //                    if (uint32x4_check(vcleq_f32(vabdq_f32(base_current, data_shifts[m][j]), max_err_vec))) {
+                    //                        ++c;
+                    //                        if (fabs(base_next[0] - data_shifts[m][j + 1][0]) < max_err)
+                    //                            ++c1;
+                    //                    }
+
+                    tmp_next = tmp_current;
+                }
+            }
+        }
+    }
+    */
     return c1 > 0 ? logf((float)c / (float)c1) : 0;
 }
 
@@ -81,37 +132,28 @@ typedef struct {
 static pthread_t thread_pool[NUM_THREADS];
 static routine_struct_t cookies[NUM_THREADS];
 static volatile bool kill_threads;
-static std::condition_variable cond_var;
-static std::mutex mtx;
-
-
 
 static void *thread_routine(void *cookie)
 {
     routine_struct_t *tmp = static_cast<routine_struct_t *>(cookie);
-    struct timespec time;
+    unsigned int cpu_affinity;
 
     cpu_set_t affinity;
     sched_getaffinity(0, sizeof(cpu_set_t), &affinity);
     for (unsigned int i = 0; i < NUM_CPU; ++i) {
         if (CPU_ISSET(i, &affinity)) {
-            std::cout << "Thread started on cpu " << i << std::endl;
+            cpu_affinity = i;
+            std::cout << "Thread started on cpu " << cpu_affinity << std::endl;
         }
     }
 
     while (!kill_threads) {
-        std::unique_lock<std::mutex> lock(mtx);
-        if (cond_var.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::no_timeout) {
-            lock.unlock();
-
-            if (tmp->working) {
-                for (unsigned int i = 0; i < tmp->sz; ++i) {
-                    tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma);
-                }
-                tmp->working = false;
+        if (tmp->working) {
+            for (unsigned int i = 0; i < tmp->sz; ++i) {
+                tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma);
             }
+            tmp->working = false;
         }
-        std::this_thread::sleep_for(std::chrono::microseconds(1));
     }
     return NULL;
 }
@@ -151,47 +193,43 @@ void cleanup_neon_parallel()
     kill_threads = true;
 
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
+        cookies[i].working = false;
+    }
+
+    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
         pthread_join(thread_pool[i], NULL);
     }
 }
 
-std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > data, float r, float sigma)
+std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > &data, float r, float sigma)
 {
     std::vector<float> ret_value;
 
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        smpen_par_t routine_data;
-        routine_data.r = r;
-        routine_data.sigma = sigma;
+    smpen_par_t routine_data;
+    routine_data.r = r;
+    routine_data.sigma = sigma;
 
-        for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-            cookies[i].sz = 0;
-        }
-
-        for (unsigned int i = 0; i < data.size(); ++i) {
-            routine_data.raw_data = data[i].data();
-            cookies[i % NUM_THREADS].data[i / NUM_THREADS] = routine_data;
-            ++cookies[i % NUM_THREADS].sz;
-        }
-
-        for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-            cookies[i].working = true;
-        }
+    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
+        cookies[i].sz = 0;
     }
-    cond_var.notify_all();
 
-    while (true) {
-        bool tmp = false;
+    for (unsigned int i = 0; i < data.size(); ++i) {
+        routine_data.raw_data = data[i].data();
+        cookies[i % NUM_THREADS].data[i / NUM_THREADS] = routine_data;
+        ++cookies[i % NUM_THREADS].sz;
+    }
+
+    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
+        cookies[i].working = true;
+    }
+
+    bool tmp;
+    do {
+        tmp = false;
         for (unsigned int i = 0; i < NUM_THREADS; ++i) {
             tmp = tmp || cookies[i].working;
-            //std::cout << cookies[i].working << " ";
         }
-        //std::cout << tmp << std::endl;
-        if (!tmp) {
-            break;
-        }
-    }
+    } while (tmp);
 
     for (unsigned int i = 0; i < data.size(); ++i) {
         ret_value.push_back(cookies[i % NUM_THREADS].data[i / NUM_THREADS].res);
@@ -199,3 +237,4 @@ std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > 
 
     return ret_value;
 }
+
