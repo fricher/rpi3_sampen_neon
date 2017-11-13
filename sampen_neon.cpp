@@ -33,7 +33,12 @@ float extractSampEn_neon(const float *data, float r, float sigma)
         for (const float *j = i + 1; j < data_end - 4; ++j) {
             float32x4_t vec128b = vld1q_f32(j);
 
+#ifdef __aarch64__
             tmp = vminvq_u32(vandq_u32(vcleq_f32(vabdq_f32(vec128a, vec128b), max_err_vec), onex4));
+#else
+			tmp = uint32x4_check(vandq_u32(vcleq_f32(vabdq_f32(vec128a, vec128b), max_err_vec), onex4));
+#endif
+			
             c += tmp;
 
             const float *ni = i + 4, *nj = j + 4;
