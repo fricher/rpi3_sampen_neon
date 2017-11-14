@@ -31,8 +31,8 @@ static std::vector<float> data[FILE_COLS];
 
 int main(int, char **)
 {
-    if(setpriority(PRIO_PROCESS, 0, -20) != 0)
-    	std::cerr << "Could not set process priority" << std::endl;
+    if (setpriority(PRIO_PROCESS, 0, -20) != 0)
+        std::cerr << "Could not set process priority" << std::endl;
 
     struct sched_param sp;
     memset(&sp, 0, sizeof(sp));
@@ -68,9 +68,9 @@ int main(int, char **)
 
     float r = 0.2, sigma = 255;
 
-	
-	
-	/*
+
+
+    /*
     wnd_cnt = 0;
     clock_gettime(CLOCK_REALTIME, &start);
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
@@ -140,29 +140,37 @@ int main(int, char **)
 
     std::cout << "Average time (neon) : " << time_neon_threaded / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal_threaded - time_neon_threaded) / time_normal_threaded) << "%" << std::endl << std::endl;
-*/
-	
-	
-	init_neon_parallel();
-	std::vector<std::vector<float> > vec_data;
-	for(unsigned int i = 1; i < FILE_COLS; ++i)
-	{
-		vec_data.push_back(data[i]);
-	}
-	
+    */
+    double current_elapsed, min_elapsed = 100, max_elapsed = 0;
+
+    init_neon_parallel();
+    std::vector<std::vector<float> > vec_data;
+    for (unsigned int i = 1; i < FILE_COLS; ++i) {
+        vec_data.push_back(data[i]);
+    }
+
     wnd_cnt = 0;
-    clock_gettime(CLOCK_REALTIME, &start);
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
         for (unsigned int i = 0; i * 64 < data[0].size() - 1; ++i) {
             ++wnd_cnt;
 
-			extractSampEn_neon_parallel(vec_data, r, sigma);
+            clock_gettime(CLOCK_REALTIME, &start);
+			
+            extractSampEn_neon_parallel(vec_data, r, sigma);
+			
+            clock_gettime(CLOCK_REALTIME, &end);
+            current_elapsed = elapsed_ms(start, end);
+			
+			if(current_elapsed > max_elapsed)
+				max_elapsed = current_elapsed;
+			else if(current_elapsed < min_elapsed)
+				min_elapsed = current_elapsed;
+			
+            time_neon_threaded += current_elapsed;
         }
     }
-    clock_gettime(CLOCK_REALTIME, &end);
-    time_neon_threaded = elapsed_ms(start, end);
-	cleanup_neon_parallel();
+    cleanup_neon_parallel();
 
     std::cout << "----> Manually threaded" << std::endl;
-    std::cout << "Average time (neon) : " << time_neon_threaded / wnd_cnt << "ms" << std::endl;
+    std::cout << "Average time after " << NUM_RUNS << " runs (neon) : " << time_neon_threaded / wnd_cnt << "ms [" << min_elapsed << ";" << max_elapsed << "]" << std::endl;
 }
