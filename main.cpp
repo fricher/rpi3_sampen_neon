@@ -19,7 +19,7 @@
 #include "sampen.h"
 #include "sampen_neon.h"
 
-#define NUM_RUNS 30
+#define NUM_RUNS 100
 
 static inline double elapsed_ms(struct timespec &start, struct timespec &end)
 {
@@ -141,7 +141,10 @@ int main(int, char **)
     std::cout << "Average time (neon) : " << time_neon_threaded / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal_threaded - time_neon_threaded) / time_normal_threaded) << "%" << std::endl << std::endl;
     */
+	
+	
     double current_elapsed, min_elapsed = 100, max_elapsed = 0;
+	unsigned int index, nrun_min;
 
     init_neon_parallel();
     std::vector<std::vector<float> > vec_data;
@@ -163,14 +166,22 @@ int main(int, char **)
 			
 			if(current_elapsed > max_elapsed)
 				max_elapsed = current_elapsed;
-			else if(current_elapsed < min_elapsed)
+			else if(current_elapsed < min_elapsed) {
 				min_elapsed = current_elapsed;
+				index = i;
+				nrun_min = num_runs;
+			}
+			/*
+			if(current_elapsed < 0.25) {
+				std::cout << current_elapsed << std::endl;
+			}*/
 			
             time_neon_threaded += current_elapsed;
         }
     }
-    cleanup_neon_parallel();
 
     std::cout << "----> Manually threaded" << std::endl;
-    std::cout << "Average time after " << NUM_RUNS << " runs (neon) : " << time_neon_threaded / wnd_cnt << "ms [" << min_elapsed << ";" << max_elapsed << "]" << std::endl;
+    std::cout << "Average time after " << NUM_RUNS << " runs (neon) : " << time_neon_threaded / wnd_cnt << "ms [" << min_elapsed << " ("<< index << "," << nrun_min << ");" << max_elapsed << "]" << std::endl;
+	
+    cleanup_neon_parallel();
 }

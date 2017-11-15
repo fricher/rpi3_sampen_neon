@@ -2,15 +2,17 @@
 
 #include <string.h>
 #include <pthread.h>
+#include <semaphore.h>
 
 #include <thread>
 #include <chrono>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <iostream>
 
-#define NUM_THREADS 3
 #define NUM_CPU 4
+#define NUM_THREADS NUM_CPU
 
 static inline uint32_t uint32x4_check(uint32x4_t in)
 {
@@ -36,9 +38,9 @@ float extractSampEn_neon(const float *data, float r, float sigma)
 #ifdef __aarch64__
             tmp = vminvq_u32(vandq_u32(vcleq_f32(vabdq_f32(vec128a, vec128b), max_err_vec), onex4));
 #else
-			tmp = uint32x4_check(vandq_u32(vcleq_f32(vabdq_f32(vec128a, vec128b), max_err_vec), onex4));
+            tmp = uint32x4_check(vandq_u32(vcleq_f32(vabdq_f32(vec128a, vec128b), max_err_vec), onex4));
 #endif
-			
+
             c += tmp;
 
             const float *ni = i + 4, *nj = j + 4;
@@ -129,6 +131,7 @@ typedef struct {
 } smpen_par_t;
 
 typedef struct {
+    std::mutex mtx;
     volatile bool working;
     smpen_par_t data[10];
     unsigned int sz;
@@ -137,6 +140,13 @@ typedef struct {
 static pthread_t thread_pool[NUM_THREADS];
 static routine_struct_t cookies[NUM_THREADS];
 static volatile bool kill_threads;
+
+sem_t shm;
+std::mutex mtx;
+std::condition_variable cond_var_to_threads;
+std::condition_variable cond_var_to_main;
+
+volatile uint8_t proceed;
 
 static void *thread_routine(void *cookie)
 {
@@ -152,14 +162,19 @@ static void *thread_routine(void *cookie)
         }
     }
 
-    while (!kill_threads) {
-        if (tmp->working) {
-            for (unsigned int i = 0; i < tmp->sz; ++i) {
-                tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma);
-            }
-            tmp->working = false;
+    unsigned int cnt = 0;
+    do {
+        std::unique_lock<std::mutex> lock_thread(tmp->mtx);
+        for (unsigned int i = 0; i < tmp->sz; ++i) {
+            tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma);
         }
-    }
+        lock_thread.unlock();
+
+        std::unique_lock<std::mutex> lock_main(mtx);
+		++cnt;
+    } while (!kill_threads);
+
+    std::cout << "Thread done on cpu " << cpu_affinity << " : " << cnt << std::endl;
     return NULL;
 }
 
@@ -169,6 +184,9 @@ void init_neon_parallel()
     cpu_set_t affinity;
 
     kill_threads = false;
+    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
+        cookies[i].mtx.lock();
+    }
 
     struct sched_param sp;
     memset(&sp, 0, sizeof(sp));
@@ -182,28 +200,31 @@ void init_neon_parallel()
     pthread_attr_setschedparam(&attr, &sp);
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
         CPU_ZERO(&affinity);
-        CPU_SET(i % (NUM_CPU - 1), &affinity);
+        CPU_SET(i % (NUM_CPU/* - 1*/), &affinity);
         pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &affinity);
         pthread_create(&thread_pool[i], &attr, &thread_routine, &cookies[i]);
     }
 
     pthread_attr_destroy(&attr);
-
-    CPU_SET(NUM_CPU - 1, &affinity);
-    sched_setaffinity(0, sizeof(cpu_set_t), &affinity);
+    /*
+        CPU_SET(NUM_CPU - 1, &affinity);
+        sched_setaffinity(0, sizeof(cpu_set_t), &affinity);*/
 }
 
 void cleanup_neon_parallel()
 {
     kill_threads = true;
-
+	
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        cookies[i].working = false;
+        cookies[i].sz = 0;
+        cookies[i].mtx.unlock();
     }
 
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
         pthread_join(thread_pool[i], NULL);
     }
+
+    sem_destroy(&shm);
 }
 
 std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > &data, float r, float sigma)
@@ -213,6 +234,8 @@ std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > 
     smpen_par_t routine_data;
     routine_data.r = r;
     routine_data.sigma = sigma;
+
+    std::unique_lock<std::mutex> lock_main(mtx);
 
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
         cookies[i].sz = 0;
@@ -224,17 +247,20 @@ std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > 
         ++cookies[i % NUM_THREADS].sz;
     }
 
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
+    //std::cout << "got lock on mtx" << std::endl;
+
+    for (int i = NUM_THREADS-1; i >= 0; --i) {
         cookies[i].working = true;
+        cookies[i].mtx.unlock();
     }
 
-    bool tmp;
-    do {
-        tmp = false;
-        for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-            tmp = tmp || cookies[i].working;
-        }
-    } while (tmp);
+    //std::cout << "All threads are unlocked" << std::endl;
+
+    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
+        cookies[i].mtx.lock();
+    }
+
+    lock_main.unlock();
 
     for (unsigned int i = 0; i < data.size(); ++i) {
         ret_value.push_back(cookies[i % NUM_THREADS].data[i / NUM_THREADS].res);
