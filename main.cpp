@@ -19,7 +19,7 @@
 #include "sampen.h"
 #include "sampen_neon.h"
 
-#define NUM_RUNS 100
+#define NUM_RUNS 300
 
 static inline double elapsed_ms(struct timespec &start, struct timespec &end)
 {
@@ -66,7 +66,7 @@ int main(int, char **)
     float res_normal[FILE_COLS], res_neon[FILE_COLS];
     std::future<float> futures[FILE_COLS];
 
-    float r = 0.2, sigma = 255;
+    float r = 0.02, sigma = 255;
 
 
 
@@ -102,11 +102,12 @@ int main(int, char **)
 
     std::cout << "Average time (neon) : " << time_neon / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal - time_neon) / time_normal) << "%" << std::endl << std::endl;
-
+    */
+	/*
     wnd_cnt = 0;
     clock_gettime(CLOCK_REALTIME, &start);
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
-        for (unsigned int i = 0; i * 64 < data[0].size() - 1; ++i) {
+        for (unsigned int i = 0; i * 64 < data[0].size() - SAMPLE_SIZE; ++i) {
             ++wnd_cnt;
             for (unsigned int chan = 1; chan < FILE_COLS; ++chan) {
                 futures[chan] = std::async(std::launch::async, &extractSampEn, data[chan].data() + i * 64, 4, r, SAMPLE_SIZE, sigma);
@@ -125,10 +126,10 @@ int main(int, char **)
     wnd_cnt = 0;
     clock_gettime(CLOCK_REALTIME, &start);
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
-        for (unsigned int i = 0; i * 64 < data[0].size() - 1; ++i) {
+        for (unsigned int i = 0; i * 64 < data[0].size() - SAMPLE_SIZE; ++i) {
             ++wnd_cnt;
             for (unsigned int chan = 1; chan < FILE_COLS; ++chan) {
-                futures[chan] = std::async(std::launch::async, &extractSampEn_neon, data[chan].data() + i * 64, r, sigma);
+                futures[chan] = std::async(std::launch::async, &extractSampEn_neon, data[chan].data() + i * 64, r, sigma, SAMPLE_SIZE);
             }
             for (unsigned int chan = 1; chan < FILE_COLS; ++chan) {
                 res_neon[chan] = futures[chan].get();
@@ -140,48 +141,44 @@ int main(int, char **)
 
     std::cout << "Average time (neon) : " << time_neon_threaded / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal_threaded - time_neon_threaded) / time_normal_threaded) << "%" << std::endl << std::endl;
-    */
-	
+
+	*/
 	
     double current_elapsed, min_elapsed = 100, max_elapsed = 0;
-	unsigned int index, nrun_min;
 
-    init_neon_parallel();
-    std::vector<std::vector<float> > vec_data;
-    for (unsigned int i = 1; i < FILE_COLS; ++i) {
-        vec_data.push_back(data[i]);
-    }
+	init_neon_parallel();
 
+    time_neon_threaded = 0;
     wnd_cnt = 0;
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
-        for (unsigned int i = 0; i * 64 < data[0].size() - 1; ++i) {
+        for (unsigned int i = 0; i * 64 < data[0].size() - SAMPLE_SIZE; ++i) {
             ++wnd_cnt;
+			
+            std::vector<std::vector<float> > vec_data;
+            for (unsigned int k = 1; k < FILE_COLS; ++k) {
+                vec_data.push_back(std::vector<float>(data[k].begin() + i * 64, data[k].begin() + i * 64 + SAMPLE_SIZE));
+            }
+
+            //std::this_thread::sleep_for(std::chrono::milliseconds(63));
 
             clock_gettime(CLOCK_REALTIME, &start);
-			
-            extractSampEn_neon_parallel(vec_data, r, sigma);
-			
-            clock_gettime(CLOCK_REALTIME, &end);
+
+            std::vector<float> res_neon_custom = extractSampEn_neon_parallel(vec_data, r, sigma, SAMPLE_SIZE);
+
+			clock_gettime(CLOCK_REALTIME, &end);
             current_elapsed = elapsed_ms(start, end);
-			
-			if(current_elapsed > max_elapsed)
-				max_elapsed = current_elapsed;
-			else if(current_elapsed < min_elapsed) {
-				min_elapsed = current_elapsed;
-				index = i;
-				nrun_min = num_runs;
-			}
-			/*
-			if(current_elapsed < 0.25) {
-				std::cout << current_elapsed << std::endl;
-			}*/
-			
+
+            if (current_elapsed > max_elapsed)
+                max_elapsed = current_elapsed;
+            else if (current_elapsed < min_elapsed)
+                min_elapsed = current_elapsed;
+
             time_neon_threaded += current_elapsed;
         }
     }
 
     std::cout << "----> Manually threaded" << std::endl;
-    std::cout << "Average time after " << NUM_RUNS << " runs (neon) : " << time_neon_threaded / wnd_cnt << "ms [" << min_elapsed << " ("<< index << "," << nrun_min << ");" << max_elapsed << "]" << std::endl;
-	
+    std::cout << "Average time after " << NUM_RUNS << " runs (neon) : " << time_neon_threaded / wnd_cnt << "ms [" << min_elapsed << ";" << max_elapsed << "]" << std::endl;
+
     cleanup_neon_parallel();
 }
