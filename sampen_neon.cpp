@@ -10,6 +10,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <iostream>
+#include <atomic>
 
 #define NUM_CPU 4
 #define NUM_THREADS NUM_CPU
@@ -131,62 +132,57 @@ typedef struct {
 } smpen_par_t;
 
 typedef struct {
-    std::mutex mtx;
-    volatile bool working;
+    unsigned int num;
     smpen_par_t data[10];
     unsigned int sz;
 } routine_struct_t;
 
 static pthread_t thread_pool[NUM_THREADS];
 static routine_struct_t cookies[NUM_THREADS];
-static volatile bool kill_threads;
 
-sem_t shm;
-std::mutex mtx;
-std::condition_variable cond_var_to_threads;
-std::condition_variable cond_var_to_main;
+std::atomic_ushort th_kill;
+std::atomic_ushort th_working;
+std::atomic_ushort th_woken_up;
 
-volatile uint8_t proceed;
+sem_t sem;
 
 static void *thread_routine(void *cookie)
 {
     routine_struct_t *tmp = static_cast<routine_struct_t *>(cookie);
-    unsigned int cpu_affinity;
 
-    cpu_set_t affinity;
-    sched_getaffinity(0, sizeof(cpu_set_t), &affinity);
-    for (unsigned int i = 0; i < NUM_CPU; ++i) {
-        if (CPU_ISSET(i, &affinity)) {
-            cpu_affinity = i;
-            std::cout << "Thread started on cpu " << cpu_affinity << std::endl;
-        }
-    }
+    printf("Thread %d started\r\n", tmp->num);
 
     unsigned int cnt = 0;
     do {
-        std::unique_lock<std::mutex> lock_thread(tmp->mtx);
+        sem_wait(&sem);
+
+        ++th_woken_up;
+
+        ++cnt;
+
+        ++th_working;
+
         for (unsigned int i = 0; i < tmp->sz; ++i) {
             tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma);
         }
-        lock_thread.unlock();
 
-        std::unique_lock<std::mutex> lock_main(mtx);
-		++cnt;
-    } while (!kill_threads);
+        --th_working;
 
-    std::cout << "Thread done on cpu " << cpu_affinity << " : " << cnt << std::endl;
+    } while (!th_kill);
+
+    printf("thread %d ran %d times\r\n", tmp->num, cnt - 1);
+
     return NULL;
 }
 
 void init_neon_parallel()
 {
     pthread_attr_t attr = {0};
-    cpu_set_t affinity;
 
-    kill_threads = false;
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        cookies[i].mtx.lock();
-    }
+    th_kill = 0;
+
+    sem_init(&sem, 0, 0);
+    th_working = 0;
 
     struct sched_param sp;
     memset(&sp, 0, sizeof(sp));
@@ -199,32 +195,30 @@ void init_neon_parallel()
     pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
     pthread_attr_setschedparam(&attr, &sp);
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        CPU_ZERO(&affinity);
-        CPU_SET(i % (NUM_CPU/* - 1*/), &affinity);
-        pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &affinity);
+        cookies[i].num = i;
         pthread_create(&thread_pool[i], &attr, &thread_routine, &cookies[i]);
     }
 
     pthread_attr_destroy(&attr);
-    /*
-        CPU_SET(NUM_CPU - 1, &affinity);
-        sched_setaffinity(0, sizeof(cpu_set_t), &affinity);*/
 }
 
 void cleanup_neon_parallel()
 {
-    kill_threads = true;
-	
+    th_kill = 1;
+
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
         cookies[i].sz = 0;
-        cookies[i].mtx.unlock();
+    }
+
+    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
+        sem_post(&sem);
     }
 
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
         pthread_join(thread_pool[i], NULL);
     }
 
-    sem_destroy(&shm);
+    sem_destroy(&sem);
 }
 
 std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > &data, float r, float sigma)
@@ -234,8 +228,6 @@ std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > 
     smpen_par_t routine_data;
     routine_data.r = r;
     routine_data.sigma = sigma;
-
-    std::unique_lock<std::mutex> lock_main(mtx);
 
     for (unsigned int i = 0; i < NUM_THREADS; ++i) {
         cookies[i].sz = 0;
@@ -247,20 +239,15 @@ std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > 
         ++cookies[i % NUM_THREADS].sz;
     }
 
-    //std::cout << "got lock on mtx" << std::endl;
+    th_woken_up = 0;
 
-    for (int i = NUM_THREADS-1; i >= 0; --i) {
-        cookies[i].working = true;
-        cookies[i].mtx.unlock();
+    for (int i = NUM_THREADS - 1; i >= 0; --i) {
+        sem_post(&sem);
     }
 
-    //std::cout << "All threads are unlocked" << std::endl;
+    while (th_woken_up < NUM_THREADS);
 
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        cookies[i].mtx.lock();
-    }
-
-    lock_main.unlock();
+    while (th_working > 0);
 
     for (unsigned int i = 0; i < data.size(); ++i) {
         ret_value.push_back(cookies[i % NUM_THREADS].data[i / NUM_THREADS].res);
