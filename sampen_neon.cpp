@@ -126,7 +126,6 @@ std::vector<float> SampEnExtractor::extract_sampen_neon_parallel(std::vector<std
         _thread_cookies[i].data.clear();
     }
 
-    workload.tolerance = _tolerance;
     workload.res = 0;
     for (unsigned int i = 0; i < data.size(); ++i) {
 

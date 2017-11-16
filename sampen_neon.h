@@ -14,7 +14,6 @@ class SampEnExtractor
 public:
 
     typedef struct {
-        float tolerance;
         float *raw_data;
         unsigned int raw_data_sz;
         float res;
