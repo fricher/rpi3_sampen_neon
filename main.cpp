@@ -144,7 +144,9 @@ int main(int, char **)
 
 	*/
 	
-	SampEnExtractor see(r*sigma);
+	std::vector<float> tolerances;
+	tolerances.insert(tolerances.begin(),FILE_COLS-1,r*sigma);
+	SampEnExtractor see;
 	see.init_thread_pool(4);
 	
     double current_elapsed, min_elapsed = 100, max_elapsed = 0;
@@ -164,7 +166,7 @@ int main(int, char **)
 
             clock_gettime(CLOCK_REALTIME, &start);
 
-            std::vector<float> res_neon_custom = see.extract_sampen_neon_parallel(vec_data);
+            std::vector<float> res_neon_custom = see.extract_sampen_neon_parallel(vec_data, tolerances);
 
 			clock_gettime(CLOCK_REALTIME, &end);
             current_elapsed = elapsed_ms(start, end);
