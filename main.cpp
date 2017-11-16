@@ -19,7 +19,7 @@
 #include "sampen.h"
 #include "sampen_neon.h"
 
-#define NUM_RUNS 300
+#define NUM_RUNS 50
 
 static inline double elapsed_ms(struct timespec &start, struct timespec &end)
 {
@@ -103,7 +103,7 @@ int main(int, char **)
     std::cout << "Average time (neon) : " << time_neon / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal - time_neon) / time_normal) << "%" << std::endl << std::endl;
     */
-	/*
+
     wnd_cnt = 0;
     clock_gettime(CLOCK_REALTIME, &start);
     for (unsigned int num_runs = 0; num_runs < NUM_RUNS; ++num_runs) {
@@ -129,7 +129,7 @@ int main(int, char **)
         for (unsigned int i = 0; i * 64 < data[0].size() - SAMPLE_SIZE; ++i) {
             ++wnd_cnt;
             for (unsigned int chan = 1; chan < FILE_COLS; ++chan) {
-                futures[chan] = std::async(std::launch::async, &extractSampEn_neon, data[chan].data() + i * 64, r, sigma, SAMPLE_SIZE);
+                futures[chan] = std::async(std::launch::async, &SampEnExtractor::extract_sampen_neon, data[chan].data() + i * 64, SAMPLE_SIZE, r* sigma);
             }
             for (unsigned int chan = 1; chan < FILE_COLS; ++chan) {
                 res_neon[chan] = futures[chan].get();
@@ -141,8 +141,6 @@ int main(int, char **)
 
     std::cout << "Average time (neon) : " << time_neon_threaded / wnd_cnt << "ms" << std::endl;
     std::cout << "Average performance gain : " << (100 * (time_normal_threaded - time_neon_threaded) / time_normal_threaded) << "%" << std::endl << std::endl;
-
-	*/
 	
 	std::vector<float> tolerances;
 	tolerances.insert(tolerances.begin(),FILE_COLS-1,r*sigma);
@@ -161,8 +159,6 @@ int main(int, char **)
             for (unsigned int k = 1; k < FILE_COLS; ++k) {
                 vec_data.push_back(std::vector<float>(data[k].begin() + i * 64, data[k].begin() + i * 64 + SAMPLE_SIZE));
             }
-
-            //std::this_thread::sleep_for(std::chrono::milliseconds(63));
 
             clock_gettime(CLOCK_REALTIME, &start);
 

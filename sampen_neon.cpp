@@ -13,12 +13,14 @@ static inline uint32_t uint32x4_check(uint32x4_t in)
 
 SampEnExtractor::SampEnExtractor()
 {
-    sem_init(&_sem, 0, 0);
+    sem_init(&_sem_begin, 0, 0);
+    sem_init(&_sem_end, 0, 0);
 }
 
 SampEnExtractor::~SampEnExtractor()
 {
-    sem_destroy(&_sem);
+    sem_destroy(&_sem_begin);
+    sem_destroy(&_sem_end);
 }
 
 void SampEnExtractor::init_thread_pool(unsigned int num_threads, int thread_sched_priority)
@@ -63,7 +65,8 @@ void SampEnExtractor::cleanup_thread_pool()
     }
 
     for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
-        sem_post(&_sem);
+        sem_post(&_sem_begin);
+        sem_post(&_sem_end);
     }
 
     for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
@@ -76,8 +79,8 @@ void SampEnExtractor::cleanup_thread_pool()
 
 std::vector<float> SampEnExtractor::extract_sampen_neon_parallel(std::vector<std::vector<float> > &data, std::vector<float> tolerances)
 {
-	assert(data.size() == tolerances.size());
-	
+    assert(data.size() == tolerances.size());
+
     std::vector<float> results;
 
     sampen_task_t workload;
@@ -88,7 +91,7 @@ std::vector<float> SampEnExtractor::extract_sampen_neon_parallel(std::vector<std
 
     workload.res = 0;
     for (unsigned int i = 0; i < data.size(); ++i) {
-		workload.tolerance = tolerances[i];
+        workload.tolerance = tolerances[i];
         workload.raw_data = data[i].data();
         workload.raw_data_sz = data[i].size();
 
@@ -97,13 +100,17 @@ std::vector<float> SampEnExtractor::extract_sampen_neon_parallel(std::vector<std
 
     _th_woken_up = 0;
 
-    for (int i = _thread_pool.size() - 1; i >= 0; --i) {
-        sem_post(&_sem);
+    for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
+        sem_post(&_sem_begin);
     }
 
     while (_th_woken_up < _thread_pool.size());
 
     while (_th_working > 0);
+
+    for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
+        sem_post(&_sem_end);
+    }
 
     for (unsigned int i = 0; i < data.size(); ++i) {
         results.push_back(_thread_cookies[i % _thread_pool.size()].data[i / _thread_pool.size()].res);
@@ -141,7 +148,6 @@ float SampEnExtractor::extract_sampen_neon(const float *data, const unsigned int
         }
     }
 
-
     return c1 > 0 ? logf((float)c / (float)c1) : 0;
 }
 
@@ -149,27 +155,24 @@ void SampEnExtractor::_thread_routine(void *cookie)
 {
     thread_workload_t *tmp = static_cast<thread_workload_t *>(cookie);
 
-    printf("Thread %d started\r\n", tmp->thread_num);
-
     unsigned int cnt = 0;
     do {
-        sem_wait(&_sem);
-
-        ++_th_woken_up;
+        sem_wait(&_sem_begin);
 
         ++cnt;
 
-        ++_th_working;
-
+        _th_working++; // This must be done before _th_woken_up++
+        _th_woken_up++;
+		
         for (unsigned int i = 0; i < tmp->data.size(); ++i) {
             tmp->data[i].res = extract_sampen_neon(tmp->data[i].raw_data, tmp->data[i].raw_data_sz, tmp->data[i].tolerance);
         }
 
-        --_th_working;
+        _th_working--;
+		
+        sem_wait(&_sem_end);
 
     } while (!_th_kill);
-
-    printf("Thread %d ran %d times\r\n", tmp->thread_num, cnt - 1);
 }
 
 void *thread_routine_wrapper(void *cookie)

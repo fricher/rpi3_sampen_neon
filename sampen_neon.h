@@ -45,7 +45,8 @@ private:
     std::atomic_ushort _th_working;
     std::atomic_ushort _th_woken_up;
 
-    sem_t _sem;
+    sem_t _sem_begin;
+    sem_t _sem_end;
 
     void _thread_routine(void *);
 
