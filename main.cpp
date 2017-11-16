@@ -144,9 +144,10 @@ int main(int, char **)
 
 	*/
 	
+	SampEnExtractor see(r*sigma);
+	see.init_thread_pool(4);
+	
     double current_elapsed, min_elapsed = 100, max_elapsed = 0;
-
-	init_neon_parallel();
 
     time_neon_threaded = 0;
     wnd_cnt = 0;
@@ -163,7 +164,7 @@ int main(int, char **)
 
             clock_gettime(CLOCK_REALTIME, &start);
 
-            std::vector<float> res_neon_custom = extractSampEn_neon_parallel(vec_data, r, sigma, SAMPLE_SIZE);
+            std::vector<float> res_neon_custom = see.extract_sampen_neon_parallel(vec_data);
 
 			clock_gettime(CLOCK_REALTIME, &end);
             current_elapsed = elapsed_ms(start, end);
@@ -180,5 +181,5 @@ int main(int, char **)
     std::cout << "----> Manually threaded" << std::endl;
     std::cout << "Average time after " << NUM_RUNS << " runs (neon) : " << time_neon_threaded / wnd_cnt << "ms [" << min_elapsed << ";" << max_elapsed << "]" << std::endl;
 
-    cleanup_neon_parallel();
+    see.cleanup_thread_pool();
 }

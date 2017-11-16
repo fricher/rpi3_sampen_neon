@@ -1,35 +1,167 @@
 #include "sampen_neon.h"
 
+#include <arm_neon.h>
 #include <string.h>
-#include <pthread.h>
-#include <semaphore.h>
+#include <math.h>
+#include <stdio.h>
 
-#include <thread>
-#include <chrono>
-#include <vector>
-#include <mutex>
-#include <condition_variable>
-#include <iostream>
-#include <atomic>
-
-#define NUM_CPU 4
-#define NUM_THREADS 4
+void *thread_routine_wrapper(void *cookie)
+{
+    SampEnExtractor::thread_workload_t *rwc = static_cast<SampEnExtractor::thread_workload_t *>(cookie);
+    rwc->see->_thread_routine(cookie);
+    return NULL;
+}
 
 static inline uint32_t uint32x4_check(uint32x4_t in)
 {
     return in[0] & in[1] & in[2] & in[3] & 0x01;
 }
 
-float extractSampEn_neon(const float *data, float r, float sigma, unsigned int sample_size)
-{		
+void SampEnExtractor::_thread_routine(void *cookie)
+{
+    thread_workload_t *tmp = static_cast<thread_workload_t *>(cookie);
+
+    printf("Thread %d started\r\n", tmp->thread_num);
+
+    unsigned int cnt = 0;
+    do {
+        sem_wait(&_sem);
+
+        ++_th_woken_up;
+
+        ++cnt;
+
+        ++_th_working;
+
+        for (unsigned int i = 0; i < tmp->data.size(); ++i) {
+            tmp->data[i].res = extract_sampen_neon(tmp->data[i].raw_data, tmp->data[i].raw_data_sz, _tolerance);
+        }
+
+        --_th_working;
+
+    } while (!_th_kill);
+
+    printf("Thread %d ran %d times\r\n", tmp->thread_num, cnt - 1);
+}
+
+SampEnExtractor::SampEnExtractor() : SampEnExtractor(0)
+{
+}
+
+SampEnExtractor::SampEnExtractor(float tolerance) : _tolerance(tolerance)
+{
+    sem_init(&_sem, 0, 0);
+}
+
+SampEnExtractor::~SampEnExtractor()
+{
+    sem_destroy(&_sem);
+}
+
+void SampEnExtractor::set_tolerance(float tolerance)
+{
+	_tolerance = tolerance;
+}
+
+void SampEnExtractor::init_thread_pool(unsigned int num_threads, int thread_sched_priority)
+{
+    if (!_thread_pool.empty())
+        cleanup_thread_pool();
+
+    _thread_pool.resize(num_threads);
+    _thread_cookies.resize(num_threads);
+
+    _th_kill = 0;
+    _th_working = 0;
+
+    pthread_attr_t attr;
+    memset(&attr, 0, sizeof(pthread_attr_t));
+
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = thread_sched_priority;
+
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+    pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
+    pthread_attr_setschedparam(&attr, &sp);
+
+    for (unsigned int i = 0; i < num_threads; ++i) {
+        _thread_cookies[i].thread_num = i;
+        _thread_cookies[i].see = this;
+        pthread_create(&_thread_pool[i], &attr, &thread_routine_wrapper, &_thread_cookies[i]);
+    }
+
+    pthread_attr_destroy(&attr);
+}
+
+void SampEnExtractor::cleanup_thread_pool()
+{
+    _th_kill = 1;
+
+    for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
+        _thread_cookies[i].data.clear();
+    }
+
+    for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
+        sem_post(&_sem);
+    }
+
+    for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
+        pthread_join(_thread_pool[i], NULL);
+    }
+
+    _thread_pool.clear();
+    _thread_cookies.clear();
+}
+
+std::vector<float> SampEnExtractor::extract_sampen_neon_parallel(std::vector<std::vector<float> > &data)
+{
+    std::vector<float> results;
+
+    sampen_task_t workload;
+
+    for (unsigned int i = 0; i < _thread_pool.size(); ++i) {
+        _thread_cookies[i].data.clear();
+    }
+
+    workload.tolerance = _tolerance;
+    workload.res = 0;
+    for (unsigned int i = 0; i < data.size(); ++i) {
+
+        workload.raw_data = data[i].data();
+        workload.raw_data_sz = data[i].size();
+
+        _thread_cookies[i % _thread_pool.size()].data.push_back(workload);
+    }
+
+    _th_woken_up = 0;
+
+    for (int i = _thread_pool.size() - 1; i >= 0; --i) {
+        sem_post(&_sem);
+    }
+
+    while (_th_woken_up < _thread_pool.size());
+
+    while (_th_working > 0);
+
+    for (unsigned int i = 0; i < data.size(); ++i) {
+        results.push_back(_thread_cookies[i % _thread_pool.size()].data[i / _thread_pool.size()].res);
+    }
+
+    return results;
+}
+
+float SampEnExtractor::extract_sampen_neon(const float *data, const unsigned int data_sz, float tolerance)
+{
     uint32_t c = 0, c1 = 0;
     uint32_t tmp;
-    const float max_err = r * sigma;
 
-    const float32x4_t max_err_vec = vmovq_n_f32(max_err);
+    const float32x4_t max_err_vec = vmovq_n_f32(tolerance);
     const uint32x4_t onex4 = vmovq_n_u32(1);
 
-    const float *data_end = data + sample_size;
+    const float *data_end = data + data_sz;
 
     for (const float *i = data; i < data_end - 4; ++i) {
         float32x4_t vec128a = vld1q_f32(i);
@@ -45,150 +177,12 @@ float extractSampEn_neon(const float *data, float r, float sigma, unsigned int s
             c += tmp;
 
             const float *ni = i + 4, *nj = j + 4;
-            if (tmp > 0 && (fabs(*ni - *nj) <= max_err))
+            if (tmp > 0 && (fabs(*ni - *nj) <= tolerance))
                 ++c1;
         }
     }
-    
+
 
     return c1 > 0 ? logf((float)c / (float)c1) : 0;
-}
-
-typedef struct {
-    float r;
-    float sigma;
-    float *raw_data;
-	unsigned int raw_data_sz;
-
-    float res;
-} smpen_par_t;
-
-typedef struct {
-    unsigned int num;
-    smpen_par_t data[10];
-    unsigned int sz;
-} routine_struct_t;
-
-static pthread_t thread_pool[NUM_THREADS];
-static routine_struct_t cookies[NUM_THREADS];
-
-std::atomic_ushort th_kill;
-std::atomic_ushort th_working;
-std::atomic_ushort th_woken_up;
-
-sem_t sem;
-
-static void *thread_routine(void *cookie)
-{
-    routine_struct_t *tmp = static_cast<routine_struct_t *>(cookie);
-
-    printf("Thread %d started\r\n", tmp->num);
-
-    unsigned int cnt = 0;
-    do {
-        sem_wait(&sem);
-
-        ++th_woken_up;
-
-        ++cnt;
-
-        ++th_working;
-		
-			//printf("%d | %f %f %f %f %f\r\n",tmp->num, tmp->data[0].raw_data[tmp->data[0].raw_data_sz-5],tmp->data[0].raw_data[tmp->data[0].raw_data_sz-4],tmp->data[0].raw_data[tmp->data[0].raw_data_sz-3],tmp->data[0].raw_data[tmp->data[0].raw_data_sz-2],tmp->data[0].raw_data[tmp->data[0].raw_data_sz-1]);
-
-        for (unsigned int i = 0; i < tmp->sz; ++i) {
-            tmp->data[i].res = extractSampEn_neon(tmp->data[i].raw_data, tmp->data[i].r, tmp->data[i].sigma, tmp->data[i].raw_data_sz);
-			//printf("res=%f, %d\r\n",tmp->data[i].res, tmp->data[i].raw_data_sz);
-        }
-
-        --th_working;
-
-    } while (!th_kill);
-
-    printf("thread %d ran %d times\r\n", tmp->num, cnt - 1);
-
-    return NULL;
-}
-
-void init_neon_parallel()
-{
-    pthread_attr_t attr = {0};
-
-    th_kill = 0;
-
-    sem_init(&sem, 0, 0);
-    th_working = 0;
-
-    struct sched_param sp;
-    memset(&sp, 0, sizeof(sp));
-    sp.sched_priority = 99;
-
-    pthread_attr_init(&attr);
-
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
-    pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
-    pthread_attr_setschedparam(&attr, &sp);
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        cookies[i].num = i;
-        pthread_create(&thread_pool[i], &attr, &thread_routine, &cookies[i]);
-    }
-
-    pthread_attr_destroy(&attr);
-}
-
-void cleanup_neon_parallel()
-{
-    th_kill = 1;
-
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        cookies[i].sz = 0;
-    }
-
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        sem_post(&sem);
-    }
-
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        pthread_join(thread_pool[i], NULL);
-    }
-
-    sem_destroy(&sem);
-}
-
-std::vector<float> extractSampEn_neon_parallel(std::vector<std::vector<float> > &data, float r, float sigma, unsigned int sample_size)
-{
-    std::vector<float> ret_value;
-
-    smpen_par_t routine_data;
-    routine_data.r = r;
-    routine_data.sigma = sigma;
-
-    for (unsigned int i = 0; i < NUM_THREADS; ++i) {
-        cookies[i].sz = 0;
-    }
-
-    for (unsigned int i = 0; i < data.size(); ++i) {
-        routine_data.raw_data = data[i].data();
-		routine_data.raw_data_sz = data[i].size();
-        cookies[i % NUM_THREADS].data[i / NUM_THREADS] = routine_data;
-        ++cookies[i % NUM_THREADS].sz;
-    }
-
-    th_woken_up = 0;
-
-    for (int i = NUM_THREADS - 1; i >= 0; --i) {
-        sem_post(&sem);
-    }
-
-    while (th_woken_up < NUM_THREADS);
-
-    while (th_working > 0);
-
-    for (unsigned int i = 0; i < data.size(); ++i) {
-        ret_value.push_back(cookies[i % NUM_THREADS].data[i / NUM_THREADS].res);
-    }
-
-    return ret_value;
 }
 
