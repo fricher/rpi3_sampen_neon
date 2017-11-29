@@ -2,3 +2,8 @@
 
 apt-get update
 apt-get install -y qemu-user-static
+
+git clone https://github.com/computermouth/qemu-static-conf.git
+mkdir -p /lib/binfmt.d
+cp qemu-static-conf/*.conf /lib/binfmt.d/
+systemctl restart systemd-binfmt.service
