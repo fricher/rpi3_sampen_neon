@@ -1,2 +1,4 @@
-RUN apt-get update
-RUN apt-get install -y qemu-user-static
+#!/bin/bash
+
+apt-get update
+apt-get install -y qemu-user-static
